@@ -4,14 +4,67 @@
 #include<string>
 #include<sstream>
 #include<Windows.h>
-#include<ctemplate/template.h>     
 #include<filesystem>
 #include<stack>
+#include<ctemplate/template.h>
 
 using namespace std::filesystem;
 
 namespace rub {
 using namespace std;
+
+// 处理链接 暂不支持嵌套
+void line2html(const string& md, stringstream& ss) {
+	enum class ST{NONE,START_TX,END_TX,START_HREF};
+	ST s = ST::NONE;
+	// todo: 换掉stringstream
+	stringstream tx;
+	stringstream hf;
+	for (const auto& it : md) {
+		switch (s)
+		{
+		case ST::NONE:
+			if (it == '[') {
+				s = ST::START_TX;
+			}
+			else {
+				ss << it;
+			}
+			break;
+		case ST::START_TX:
+			if (it == ']') {
+				s = ST::END_TX;
+			}
+			else {
+				tx << it;
+			}
+			break;
+		case ST::END_TX:
+			if (it == '(') {
+				s = ST::START_HREF;
+			}
+			else {
+				s = ST::NONE;
+				tx.str("");
+			}
+			break;
+		case ST::START_HREF:
+			if (it == ')') {
+				s = ST::NONE;
+				ss << "<a href=\"" << hf.str() << "\">" << tx.str() << "</a>";
+				hf.str("");
+				tx.str("");
+			}
+			else {
+				hf << it;
+			}
+			break;
+		default:
+			break;
+		}
+	}
+}
+
 // 用一个状态机来处理md文件
 class TM {
 	enum class STATE
@@ -28,7 +81,15 @@ public:
 	// 返回值表示是否可以继续处理一行
 	bool processLine() {
 		std::string buf;
+
 		bool ret = (bool)getline(ss,buf);
+
+		// 处理行内元素
+		std:stringstream st;
+		line2html(buf, st);
+
+		buf = st.str();
+
 		if (buf.find("# ")==0) {
 			if (current != STATE::OK) {
 				html << "</div>";
@@ -44,9 +105,10 @@ public:
 		}
 		else {
 			if (current == STATE::OK) {
-				html << "<div>" << buf;
+				html << "<div>" ;
 				current = STATE::DIV;
 			}
+			html << buf;
 		}
 		return ret;
 	};
@@ -97,88 +159,6 @@ public:
 
 std::stack<rub::Config*> cfgstk;
 
-void genIndex(LPCWSTR dir, const std::vector<std::wstring>& items) {
-	// 创建index.html文件
-	TCHAR dst[100]=L"public";
-	lstrcat(dst, dir+sizeof(TEXT("content"))/sizeof(TCHAR)-1);
-	lstrcat(dst, TEXT("\\index.html"));
-
-	// 写入文件
-	HANDLE file = CreateFile(dst, GENERIC_WRITE, 0, NULL,
-		CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-
-	if (file == INVALID_HANDLE_VALUE)
-		return;
-
-	std::stringstream stream;
-	stream << "<html><head><meta charset='utf-8'></head><body>";
-	for (auto& i : items) {
-		char buffer[100];
-		memset(buffer, 0, 100);
-		WideCharToMultiByte(CP_UTF8, 0, i.c_str(), i.size(), buffer, 100, NULL, NULL);
-		std::string href = std::string(buffer);
-		stream << "<a href=\"" << href << "\">" << href << "</a><br/>";// 使用br换行
-	}
-	stream << "</body></html>";
-	auto r = stream.str();
-	WriteFile(file, r.c_str(), r.size(), nullptr, nullptr);
-	CloseHandle(file);
-}
-
-// 递归调用
-void walk(LPCWSTR path) {
-	WIN32_FIND_DATA fdata;
-	HANDLE hFind;
-	TCHAR buf[100];
-
-	std::vector<std::wstring> items;
-
-	lstrcpy(buf, path);
-	lstrcat(buf, TEXT("\\*"));
-
-	hFind = FindFirstFile(buf, &fdata);
-	if (hFind == INVALID_HANDLE_VALUE) {
-		std::cerr << __FUNCSIG__ << " " << __LINE__ << " " << path << " not find\n";
-		return;
-	}
-	do {
-		if (lstrcmp(fdata.cFileName,TEXT("."))==0||
-			lstrcmp(fdata.cFileName,TEXT(".."))==0) {
-			continue;
-		}
-		
-		if (fdata.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-			lstrcpy(buf, path);
-			lstrcat(buf, TEXT("\\"));
-			lstrcat(buf, fdata.cFileName);
-			TCHAR dst[100]=TEXT("public");
-			lstrcat(dst, buf + sizeof(TEXT("content")) / sizeof(TCHAR) - 1);
-			CreateDirectory(dst, NULL);
-			walk(buf);
-			items.push_back(fdata.cFileName);
-			continue;
-		}
-		// 检查是否是md文件
-		int length = lstrlen(fdata.cFileName);
-		if (length < 3) {
-			continue;
-		}
-		if (lstrcmp(TEXT(".md"),fdata.cFileName+length-3)!=0) {
-			continue;
-		}
-		items.push_back(fdata.cFileName);
-		TCHAR src[100];
-		TCHAR dst[100]=TEXT("public");
-		lstrcpy(src, path);
-		lstrcat(src, TEXT("\\"));
-		lstrcat(src, fdata.cFileName);
-		lstrcat(dst, src + sizeof(TEXT("content")) / sizeof(TCHAR)-1);
-
-		//renderFile(src, dst, false);
-	} while (FindNextFile(hFind, &fdata));
-
-	genIndex(path, items);
-}
 void renderDir(const path& indir, const path& outdir) {
 	// 读取文件 构造字典
 	ctemplate::TemplateDictionary dict("dir");
@@ -189,15 +169,10 @@ void renderDir(const path& indir, const path& outdir) {
 			auto p = dict.AddSectionDictionary("post");
 			
 			std::ifstream file(it.path());
-			file.seekg(0, file.end);
-			int len = file.tellg();
-			file.seekg(0, file.beg);
-
-			char* tmp = new char[len+1];
-			for (int i = 0; i < len+1; i++)tmp[i] = 0;
-
-			file.read(tmp, len);
-			(*p)["content"] = rub::md2html(tmp);
+			std::stringstream ss;
+			ss << file.rdbuf();
+			
+			(*p)["content"] = rub::md2html(ss.str());
 		}
 	}
 
@@ -220,15 +195,11 @@ void renderFile(const std::filesystem::path& md, const std::filesystem::path& ht
 	ctemplate::TemplateDictionary dict(md.string());
 	
 	std::ifstream file(md);
-	file.seekg(0, file.end);
-	int len = file.tellg();
-	file.seekg(0, file.beg);
 
-	char* tmp = new char[len];
-	for (int i = 0; i < len; i++)tmp[i] = 0;
+	std::stringstream ss;
+	ss << file.rdbuf();
 
-	file.read(tmp,len);
-	dict["content"] = rub::md2html(tmp);
+	dict["content"] = rub::md2html(ss.str());
 	std::string buf;
 
 	auto tmpp = std::filesystem::path("template").append(cfgstk.top()->templateFileName);
@@ -342,8 +313,6 @@ int main() {
 	// std::locale::global(std::locale(""));
 
 	// 遍历content目录 在public目录下输出对应文件
-	// walk(TEXT("content"));
-	// walk(std::string("content"),"public");
 
 	// 加载一个默认的模板
 	ctemplate::StringToTemplateCache("default", "This is a default tpl", ctemplate::DO_NOT_STRIP);
