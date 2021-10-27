@@ -21,7 +21,7 @@ jobs:
     - run: pwd
     - run: git clone https://github.com/microsoft/vcpkg.git
     - run: .\vcpkg\bootstrap-vcpkg.bat
-    - run: .\vcpkg\vcpkg.exe install ctemplate
+    - run: .\vcpkg\vcpkg.exe install
     - run: .\vcpkg\vcpkg.exe integrate install
 
     - name: Add MSBuild to PATH
