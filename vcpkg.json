@@ -1,0 +1,10 @@
+{
+  "name": "rublog",
+  "version-string": "1.0",
+  "dependencies": [
+    {
+      "name": "ctemplate",
+      "platform": "windows"
+    }
+  ]
+}
