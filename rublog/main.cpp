@@ -12,20 +12,45 @@ using namespace std::filesystem;
 
 namespace rub {
 using namespace std;
-
+string escape(string& buf) {
+	string ret;
+	for (auto& it : buf) {
+		if (it == '<') {
+			ret += "&lt;";
+		}
+		else if (it == '>') {
+			ret += "&gt;";
+		}
+		else {
+			ret += it;
+		}
+	}
+	return ret;
+}
 // 处理链接 暂不支持嵌套
+// 如果 () 内为空 则href= []内的内容
 void line2html(const string& md, stringstream& ss) {
 	enum class ST{NONE,START_TX,END_TX,START_HREF};
 	ST s = ST::NONE;
 	// todo: 换掉stringstream
-	stringstream tx;
-	stringstream hf;
-	for (const auto& it : md) {
+	bool img = false;
+	string tx,hf;
+	tx.reserve(64);
+	hf.reserve(64);
+	
+	for (int i = 0; i < md.length();i++) {
+		const char& it = md[i];
 		switch (s)
 		{
 		case ST::NONE:
 			if (it == '[') {
 				s = ST::START_TX;
+				
+			}
+			else if (it == '!'&&md[i+1]=='['&&md[i+2]==']') {
+				img = true;
+				i += 2;
+				s = ST::END_TX;
 			}
 			else {
 				ss << it;
@@ -36,7 +61,7 @@ void line2html(const string& md, stringstream& ss) {
 				s = ST::END_TX;
 			}
 			else {
-				tx << it;
+				tx+=it;
 			}
 			break;
 		case ST::END_TX:
@@ -45,18 +70,39 @@ void line2html(const string& md, stringstream& ss) {
 			}
 			else {
 				s = ST::NONE;
-				tx.str("");
+				tx.clear();
 			}
 			break;
 		case ST::START_HREF:
 			if (it == ')') {
 				s = ST::NONE;
-				ss << "<a href=\"" << hf.str() << "\">" << tx.str() << "</a>";
-				hf.str("");
-				tx.str("");
+				if (img) {
+					ss << "<img ";
+				}
+				else {
+					ss << "<a ";
+				}
+				ss << "href=\"";
+				if (hf.empty()) {
+					ss << tx;
+				}
+				else {
+					ss << hf;
+				}
+				
+				if (img) {
+					ss << "\"/>";
+				}
+				else {
+					ss << "\">" << tx << "</a>";
+				}
+
+				hf.clear();
+				tx.clear();
+				img = false;
 			}
 			else {
-				hf << it;
+				hf += it;
 			}
 			break;
 		default:
@@ -66,62 +112,159 @@ void line2html(const string& md, stringstream& ss) {
 }
 
 // 用一个状态机来处理md文件
+// h标签不会尝试修改状态
 class TM {
 	enum class STATE
 	{
-		OK,DIV
+		OK,DIV,CODE
 	};
 	STATE current=STATE::OK;
-	stringstream ss, html;
+	stringstream ss;
+
+	string html;
 public:
 	TM(const string& content){
+		html.reserve(4096);
 		ss << content;
 	};
 
-	// 返回值表示是否可以继续处理一行
+	// 返回值表示是否成功处理一行
 	bool processLine() {
 		std::string buf;
 
-		bool ret = (bool)getline(ss,buf);
+		if(!getline(ss,buf))return false;
 
-		// 处理行内元素
+		// 读到空行
+		if (buf.empty()) {
+			switch (current)
+			{
+			case STATE::OK:break;
+			case STATE::DIV:
+				html.append("</div>");
+				current = STATE::OK;
+				break;
+			case STATE::CODE:
+				html.append("<li></li>");
+				break;
+			default:
+				assert(1);
+			}
+			return true;
+		}
+		// 转义 < >
+		buf = escape(buf);
+
+		// 代码块
+		if (buf == "```") {
+			switch (current)
+			{
+			case STATE::DIV:
+				html.append("</div>");
+			case STATE::OK:
+				current = STATE::CODE;
+				html.append("<code><ul>");
+				break;
+			case STATE::CODE:
+				current = STATE::OK;
+				html.append("</ul></code>");
+				break;
+			default:
+				assert(1);
+			}
+			return true;
+		}
+		if (current == STATE::CODE) {
+			html.append("<li><div class=\"code-line\">")
+				.append(buf)
+				.append("</div></li>");
+			return true;
+		}
+
+		// 处理标题行
+		if (buf[0] == '#') {
+			int i = 1;
+			for (; i < 5 && buf[i] == '#'; i++) {};
+			if (buf[i] == ' ') {
+				html.append("<h")
+					.append(to_string(i))
+					.append(">")
+					.append(buf.substr(i + 1))
+					.append("</h")
+					.append(to_string(i))
+					.append(">");
+				return true;
+			}
+		}
+		
+		// 处理div行内链接
 		std:stringstream st;
 		line2html(buf, st);
 
 		buf = st.str();
-
-		if (buf.find("# ")==0) {
-			if (current != STATE::OK) {
-				html << "</div>";
-				current = STATE::OK;
-			}
-			html << "<h1>" << buf.substr(2) << "</h1>";
-		}
-		else if (buf.empty()) {
-			if (current != STATE::OK) {
-				html << "</div>";
-				current = STATE::OK;
-			}
-		}
-		else {
+		{
 			if (current == STATE::OK) {
-				html << "<div>" ;
+				html.append("<div>");
 				current = STATE::DIV;
 			}
-			html << buf;
+			html.append(buf).append("<br/>");
 		}
-		return ret;
+		return true;
 	};
 	string process() {
 		html.clear();
 		while (processLine()) {};
-		if (current != STATE::OK)html << "</div>";
-		return html.str();
+		if (current != STATE::OK)
+		switch (current)
+		{
+		case STATE::DIV:
+			html.append("</div>");
+			break;
+		case STATE::CODE:
+			html.append("</ul></code>");
+			break;
+		default:
+			break;
+		}
+		return html;
 	}
 };
 string md2html(const string& content) {
 	TM tm = TM(content);
 	return tm.process();
+}
+
+// 提取指定行数的内容
+// 用于构造brief
+// 忽略第一个标题行，空行
+// 如果不够 则直接返会原文
+string getContent(const string& md, int cnt) {
+	stringstream ss(md);
+
+	string buf,res;
+	res.reserve(1024);
+
+	bool firstLine = true;
+	while (getline(ss, buf)&&cnt!=0) {
+		if (buf.empty()) {
+			continue;
+		}
+		if (firstLine) {
+			firstLine = false;
+			if (buf[0] != '#') {
+				res.append(buf).append("\n");
+				cnt--;
+			}
+		}
+		else {
+			res.append(buf.append("\n"));
+			cnt--;
+		}
+		
+	}
+	if (cnt != 0) {
+		return md;
+	}
+	return res;
 }
 
 class Config {
@@ -159,9 +302,21 @@ public:
 
 std::stack<rub::Config*> cfgstk;
 
+// 渲染目录的index.html
 void renderDir(const path& indir, const path& outdir) {
+	// 输入目录 content/***
+	// 输出目录 public/***
+
 	// 读取文件 构造字典
 	ctemplate::TemplateDictionary dict("dir");
+
+	/*
+	auto get_last_write_time = [](std::filesystem::file_time_type const& ftime) {
+		std::time_t cftime = std::chrono::system_clock::to_time_t(
+			std::chrono::file_clock::to_sys(ftime));
+		return std::asctime(std::localtime(&cftime));
+	};
+	*/
 
 	directory_iterator its(indir);
 	for (auto& it : its) {
@@ -172,7 +327,15 @@ void renderDir(const path& indir, const path& outdir) {
 			std::stringstream ss;
 			ss << file.rdbuf();
 			
+			// 不管模板是否使用到，我们都得提供所有的键值
 			(*p)["content"] = rub::md2html(ss.str());
+			(*p)["brief"] = rub::md2html(rub::getContent(ss.str(), 5));
+			auto title = it.path().stem();
+			//auto url = relative(it.path(), "content");
+			(*p)["title"] = title.u8string();
+			(*p)["url"] = title.replace_extension(".html").u8string();
+			(*p)["last_time"] = "2021-11-07";
+			(*p)["first_time"] = "2021-11-06";
 		}
 	}
 
@@ -190,15 +353,22 @@ void renderDir(const path& indir, const path& outdir) {
 	WriteFile(hf, buf.c_str(), buf.length(), nullptr, nullptr);
 	CloseHandle(hf);
 }
+// 如果文件是空文件则不生成对应的文件
 void renderFile(const std::filesystem::path& md, const std::filesystem::path& html) {
 	// 从md文件中提取关键信息
 	ctemplate::TemplateDictionary dict(md.string());
 	
 	std::ifstream file(md);
 
+	if (file_size(md) == 0) {
+		std::cout << "file:" << md.string() << "is empty. skipped.\n";
+	}
+
 	std::stringstream ss;
 	ss << file.rdbuf();
 
+
+	dict["title"] = md.stem().u8string();
 	dict["content"] = rub::md2html(ss.str());
 	std::string buf;
 
